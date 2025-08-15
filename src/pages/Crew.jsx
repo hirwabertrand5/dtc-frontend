@@ -3,6 +3,8 @@ import { useState, useEffect } from "react";
 import { FiEdit, FiTrash2 } from "react-icons/fi";
 import axios from "axios";
 import { jwtDecode } from "jwt-decode";
+import { ToastContainer, toast } from "react-toastify";
+import "react-toastify/dist/ReactToastify.css";
 
 // --- Get user role from JWT ---
 let userRole = "";
@@ -30,8 +32,25 @@ const getStatusStyle = (status) => {
   return { ...base, backgroundColor: "#6c757d" };
 };
 
+const handleClearArchived = async () => {
+  if (!window.confirm("Are you sure you want to permanently delete all archived crew? This cannot be undone!")) return;
+  try {
+    const token = localStorage.getItem("token");
+    await axios.delete("/api/crew/archived/clear", {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    toast.success("All archived crew deleted!");
+    setShowArchived(false);
+    fetchCrew();
+  } catch (err) {
+    toast.error("Failed to clear archived crew");
+  }
+};
+
 const Crew = () => {
   const [crewData, setCrewData] = useState([]);
+  const [archivedCrew, setArchivedCrew] = useState([]);
+  const [showArchived, setShowArchived] = useState(false);
   const [showModal, setShowModal] = useState(false);
   const [editMode, setEditMode] = useState(false);
   const [editId, setEditId] = useState(null);
@@ -42,20 +61,37 @@ const Crew = () => {
     avatar: null
   });
   const [error, setError] = useState("");
+  const [page, setPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
 
   useEffect(() => {
-    fetchCrew();
-  }, []);
+    if (!showArchived) fetchCrew();
+    // eslint-disable-next-line
+  }, [page, showArchived]);
 
   const fetchCrew = async () => {
     try {
       const token = localStorage.getItem("token");
-      const res = await axios.get("/api/crew", {
+      const res = await axios.get(`/api/crew?page=${page}&limit=10`, {
         headers: { Authorization: `Bearer ${token}` }
       });
-      setCrewData(Array.isArray(res.data) ? res.data : []);
+      setCrewData(Array.isArray(res.data.data) ? res.data.data : []);
+      setTotalPages(res.data.totalPages || 1);
     } catch (err) {
-      alert("Failed to fetch crew");
+      toast.error("Failed to fetch crew");
+    }
+  };
+
+  const fetchArchivedCrew = async () => {
+    try {
+      const token = localStorage.getItem("token");
+      const res = await axios.get("/api/crew/archived", {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setArchivedCrew(res.data);
+      setShowArchived(true);
+    } catch (err) {
+      toast.error("Failed to fetch archived crew");
     }
   };
 
@@ -105,6 +141,7 @@ const Crew = () => {
             "Content-Type": "multipart/form-data"
           }
         });
+        toast.success("Crew updated!");
       } else {
         // Add
         await axios.post("/api/crew", formData, {
@@ -113,6 +150,7 @@ const Crew = () => {
             "Content-Type": "multipart/form-data"
           }
         });
+        toast.success("Crew added!");
       }
       setShowModal(false);
       setForm({
@@ -124,29 +162,60 @@ const Crew = () => {
       fetchCrew();
     } catch (err) {
       setError(err.response?.data?.error || "Failed to save crew");
+      toast.error(err.response?.data?.error || "Failed to save crew");
     }
   };
 
+  // Soft delete (archive)
   const handleDelete = async (id) => {
-    if (!window.confirm("Delete this crew member?")) return;
+    if (!window.confirm("Archive this crew member?")) return;
     try {
       const token = localStorage.getItem("token");
       await axios.delete(`/api/crew/${id}`, {
         headers: { Authorization: `Bearer ${token}` }
       });
+      toast.success("Crew archived!");
       fetchCrew();
     } catch (err) {
-      alert(err.response?.data?.error || "Failed to delete crew");
+      toast.error(err.response?.data?.error || "Failed to archive crew");
+    }
+  };
+
+  // Export to CSV
+  const handleExport = async () => {
+    try {
+      const token = localStorage.getItem("token");
+      const res = await axios.get("/api/crew/export", {
+        headers: { Authorization: `Bearer ${token}` },
+        responseType: "blob"
+      });
+      const url = window.URL.createObjectURL(new Blob([res.data]));
+      const link = document.createElement("a");
+      link.href = url;
+      link.setAttribute("download", "crew_export.csv");
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      toast.success("Exported CSV!");
+    } catch (err) {
+      toast.error("Failed to export CSV");
     }
   };
 
   return (
     <Layout>
+      <ToastContainer position="top-right" autoClose={3000} />
       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "1rem" }}>
         <h2 style={{ fontWeight: 600 }}>Crew Management</h2>
-        {userRole === "Admin" && (
-          <button onClick={() => openModal()} style={addBtn}>+ Add New Crew</button>
-        )}
+        <div style={{ display: "flex", gap: 8 }}>
+          {userRole === "Admin" && (
+            <>
+<button onClick={() => openModal()} style={addBtn}>+ Add New Crew</button>
+      <button onClick={handleExport} style={exportBtn}>Export CSV</button>
+      <button onClick={fetchArchivedCrew} style={archiveBtn}>View Archived Crew</button>
+            </>
+          )}
+        </div>
       </div>
 
       {userRole !== "Admin" && (
@@ -155,82 +224,130 @@ const Crew = () => {
         </div>
       )}
 
-      <div style={cardTable}>
-        <table style={{ width: "100%" }}>
-          <thead>
-            <tr style={{ textAlign: "left" }}>
-              <th>NAME</th>
-              <th>ID</th>
-              <th>ROLE</th>
-              <th>STATUS</th>
-              <th>ACTIONS</th>
-            </tr>
-          </thead>
-          <tbody>
-            {Array.isArray(crewData) && crewData.map((crew) => (
-              <tr key={crew._id} style={{ borderTop: "1px solid #eee", height: "60px" }}>
-                <td>
-                  <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                    <img
-                      src={
-                        crew.avatar
-                          ? crew.avatar.startsWith("/uploads")
-                            ? `http://localhost:5000${crew.avatar}`
-                            : crew.avatar
-                          : "https://i.pravatar.cc/150"
-                      }
-                      alt="avatar"
-                      style={avatarStyle}
-                    />
-                    <div>
-                      <div style={{ fontWeight: "600" }}>{crew.name}</div>
-                    </div>
-                  </div>
-                </td>
-                <td>{crew.crewId || crew._id}</td>
-                <td>{crew.role}</td>
-                <td><span style={getStatusStyle(crew.status)}>{crew.status}</span></td>
-                <td>
-                  {userRole === "Admin" ? (
-                    <>
-                      <FiEdit
-                        style={{ cursor: "pointer", marginRight: "12px", color: "#333" }}
-                        onClick={() => openModal(crew)}
-                      />
-                      <FiTrash2
-                        style={{ cursor: "pointer", color: "#dc3545" }}
-                        onClick={() => handleDelete(crew._id)}
-                      />
-                    </>
-                  ) : (
-                    <>
-                      <FiEdit
-                        style={{
-                          marginRight: "12px",
-                          color: "#bbb",
-                          cursor: "not-allowed",
-                          opacity: 0.5
-                        }}
-                        title="No permission"
-                        onClick={e => e.preventDefault()}
-                      />
-                      <FiTrash2
-                        style={{
-                          color: "#bbb",
-                          cursor: "not-allowed",
-                          opacity: 0.5
-                        }}
-                        title="No permission"
-                        onClick={e => e.preventDefault()}
-                      />
-                    </>
-                  )}
-                </td>
+      {!showArchived && (
+        <>
+          <div style={cardTable}>
+            <table style={{ width: "100%" }}>
+              <thead>
+                <tr style={{ textAlign: "left" }}>
+                  <th>NAME</th>
+                  <th>ID</th>
+                  <th>ROLE</th>
+                  <th>STATUS</th>
+                  <th>Created By</th>
+                  <th>Updated By</th>
+                  <th>ACTIONS</th>
+                </tr>
+              </thead>
+              <tbody>
+                {Array.isArray(crewData) && crewData.map((crew) => (
+                  <tr key={crew._id} style={{ borderTop: "1px solid #eee", height: "60px" }}>
+                    <td>
+                      <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                        <img
+                          src={
+                            crew.avatar
+                              ? crew.avatar.startsWith("/uploads")
+                                ? `http://localhost:5000${crew.avatar}`
+                                : crew.avatar
+                              : "https://i.pravatar.cc/150"
+                          }
+                          alt="avatar"
+                          style={avatarStyle}
+                        />
+                        <div>
+                          <div style={{ fontWeight: "600" }}>{crew.name}</div>
+                        </div>
+                      </div>
+                    </td>
+                    <td>{crew.crewId || crew._id}</td>
+                    <td>{crew.role}</td>
+                    <td><span style={getStatusStyle(crew.status)}>{crew.status}</span></td>
+                    <td>{crew.createdBy || "-"}</td>
+                    <td>{crew.updatedBy || "-"}</td>
+                    <td>
+                      {userRole === "Admin" ? (
+                        <>
+                          <FiEdit
+                            style={{ cursor: "pointer", marginRight: "12px", color: "#333" }}
+                            onClick={() => openModal(crew)}
+                          />
+                          <FiTrash2
+                            style={{ cursor: "pointer", color: "#dc3545" }}
+                            onClick={() => handleDelete(crew._id)}
+                          />
+                        </>
+                      ) : (
+                        <>
+                          <FiEdit
+                            style={{
+                              marginRight: "12px",
+                              color: "#bbb",
+                              cursor: "not-allowed",
+                              opacity: 0.5
+                            }}
+                            title="No permission"
+                            onClick={e => e.preventDefault()}
+                          />
+                          <FiTrash2
+                            style={{
+                              color: "#bbb",
+                              cursor: "not-allowed",
+                              opacity: 0.5
+                            }}
+                            title="No permission"
+                            onClick={e => e.preventDefault()}
+                          />
+                        </>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Pagination */}
+          <div style={{ marginTop: 16, display: "flex", justifyContent: "center", gap: 8 }}>
+            <button disabled={page === 1} onClick={() => setPage(page - 1)}>Prev</button>
+            <span>Page {page} of {totalPages}</span>
+            <button disabled={page === totalPages} onClick={() => setPage(page + 1)}>Next</button>
+          </div>
+        </>
+      )}
+
+      {/* Archived Crew Table */}
+      {showArchived && (
+        <div style={cardTable}>
+          <h3>Archived Crew</h3>
+          <table style={{ width: "100%" }}>
+            <thead>
+              <tr>
+                <th>NAME</th>
+                <th>ID</th>
+                <th>ROLE</th>
+                <th>STATUS</th>
+                <th>Archived By</th>
+                <th>Archived At</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody>
+              {archivedCrew.map((crew) => (
+                <tr key={crew._id}>
+                  <td>{crew.name}</td>
+                  <td>{crew.crewId}</td>
+                  <td>{crew.role}</td>
+                  <td>{crew.status}</td>
+                  <td>{crew.updatedBy || "-"}</td>
+                  <td>{new Date(crew.updatedAt).toLocaleString()}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <button onClick={() => setShowArchived(false)} style={cancelBtn}>Back to Active Crew</button>
+          <button onClick={handleClearArchived} style={cancelBtn}>Clear All Archived Crew</button>
+        </div>
+      )}
 
       {showModal && (
         <div style={modalBackdrop}>
@@ -294,6 +411,27 @@ const addBtn = {
   fontWeight: 600,
   cursor: "pointer"
 };
+
+const exportBtn = {
+  padding: "10px 16px",
+  borderRadius: "8px",
+  background: "#22c55e", // green
+  color: "#fff",
+  border: "none",
+  fontWeight: 600,
+  cursor: "pointer"
+};
+
+const archiveBtn = {
+  padding: "10px 16px",
+  borderRadius: "8px",
+  background: "#f59e42", // orange
+  color: "#fff",
+  border: "none",
+  fontWeight: 600,
+  cursor: "pointer"
+};
+
 
 const cardTable = {
   background: "#fff",
